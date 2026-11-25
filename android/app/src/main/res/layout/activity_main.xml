@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <EditText
+        android:id="@+id/etDohUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="DoH URL (https://dns.google/dns-query)"
+        android:inputType="textUri"
+        android:text="https://dns.google/dns-query" />
+
+    <EditText
+        android:id="@+id/etPubKey"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:hint="Server Public Key (64 karakter hex)"
+        android:inputType="text" />
+
+    <EditText
+        android:id="@+id/etDomain"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:hint="Tunnel Domain (t.example.com)"
+        android:inputType="textUri" />
+
+    <Button
+        android:id="@+id/btnToggle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="Connect" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Status: Disconnected" />
+
+</LinearLayout>
