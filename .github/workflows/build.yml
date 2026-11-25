@@ -1,8 +1,6 @@
 name: Build DNSTT VPN APK
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -39,8 +37,8 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
           cd go-core
+          go get golang.org/x/mobile@latest
           go mod tidy
-          go get golang.org/x/mobile/bind
           chmod +x build.sh
           ./build.sh
 
