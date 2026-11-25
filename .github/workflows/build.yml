@@ -33,8 +33,8 @@ jobs:
 
       - name: Install gomobile & Build AAR
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
+          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20251209145715-2553ed8ce294
+          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20251209145715-2553ed8ce294
           export PATH="$PATH:$(go env GOPATH)/bin"
           gomobile init
           cd go-core
