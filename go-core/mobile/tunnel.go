@@ -101,7 +101,7 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 		return err
 	}
 
-	kcpConn, err := kcp.NewConn2(pConn.remoteAddr, nil, 0, 0, pConn)
+	kcpConn, err := kcp.NewConn2(pConn.remoteAddr, nil, nil, 0, 0, pConn)
 	if err != nil {
 		pConn.Close()
 		cancel()
@@ -770,7 +770,7 @@ func (c *dnsttPacketConn) exchangeDoH(rawPayload []byte) bool {
 }
 
 func (c *dnsttPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if len(p) > c.maxRawUp-9 {
+	if len(p) > 255 || len(p) > c.maxRawUp-9 {
 		return 0, errors.New("paket KCP melebihi kapasitas QNAME")
 	}
 	cp := append([]byte(nil), p...)
