@@ -101,7 +101,7 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 		return err
 	}
 
-	kcpConn, err := kcp.NewConn2(pConn.remoteAddr, nil, nil, 0, 0, pConn)
+	kcpConn, err := kcp.NewConn2(pConn.remoteAddr, nil, 0, 0, pConn)
 	if err != nil {
 		pConn.Close()
 		cancel()
