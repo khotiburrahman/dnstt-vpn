@@ -38,6 +38,7 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
           gomobile init
           cd go-core
+          export GOPROXY=direct
           go mod tidy
           chmod +x build.sh
           ./build.sh
