@@ -11,4 +11,4 @@ require (
 	golang.org/x/net v0.29.0
 )
 
-replace gvisor.dev/gvisor => gvisor.dev/gvisor v0.0.0-20240928194204-917bbae826a0
+replace gvisor.dev/gvisor => gvisor.dev/gvisor v0.0.0-20240520182842-f9d4d51c7e0f
