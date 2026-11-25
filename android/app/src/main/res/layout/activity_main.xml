@@ -1,46 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:padding="20dp">
 
-    <EditText
-        android:id="@+id/etDohUrl"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="DoH URL (https://dns.google/dns-query)"
-        android:inputType="textUri"
-        android:text="https://dns.google/dns-query" />
+        android:orientation="vertical">
 
-    <EditText
-        android:id="@+id/etPubKey"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:hint="Server Public Key (64 karakter hex)"
-        android:inputType="text" />
+        <EditText
+            android:id="@+id/etDohUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="DoH URL (https://host/dns-query)"
+            android:inputType="textUri"
+            android:text="https://dns.google/dns-query" />
 
-    <EditText
-        android:id="@+id/etDomain"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:hint="Tunnel Domain (t.example.com)"
-        android:inputType="textUri" />
+        <EditText
+            android:id="@+id/etDomain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="Name Server / Tunnel Domain"
+            android:inputType="textUri" />
 
-    <Button
-        android:id="@+id/btnToggle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:text="Connect" />
+        <EditText
+            android:id="@+id/etPubKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="Public Key (64 karakter hex)"
+            android:inputType="text" />
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="Status: Disconnected" />
+        <EditText
+            android:id="@+id/etSshUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="SSH Username"
+            android:inputType="text" />
 
-</LinearLayout>
+        <EditText
+            android:id="@+id/etSshPass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="SSH Password"
+            android:inputType="textPassword" />
+
+        <EditText
+            android:id="@+id/etSshHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="SSH Host (default 127.0.0.1)"
+            android:inputType="text"
+            android:text="127.0.0.1" />
+
+        <EditText
+            android:id="@+id/etSshPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="SSH Port (default 22)"
+            android:inputType="number"
+            android:text="22" />
+
+        <Button
+            android:id="@+id/btnToggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Connect" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Status: Disconnected" />
+
+    </LinearLayout>
+</ScrollView>
