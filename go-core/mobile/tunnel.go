@@ -22,6 +22,7 @@ import (
 	"github.com/xjasonlyu/tun2socks/v2/engine"
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -34,12 +35,15 @@ var (
 	isRunning  bool
 	cancelFunc context.CancelFunc
 	localLn    net.Listener
+	activeSSH  *ssh.Client
+	activeSMUX *smux.Session
 )
 
 const (
 	dnsttPrologue    = "dnstt 2020-04-13"
 	maxNoiseChunk    = 4096
 	localSocksListen = "127.0.0.1:7000"
+	dnsViaSSHAddr    = "1.1.1.1:53"
 )
 
 var b32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -63,13 +67,32 @@ func protectedDialer(protector SocketProtector) *net.Dialer {
 	}
 }
 
-func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, protector SocketProtector) error {
+// StartTunnel membuka DNSTT + SSH, lalu expose SOCKS5 lokal untuk tun2socks.
+func StartTunnel(
+	tunFd int,
+	dohURL string,
+	pubKeyHex string,
+	domain string,
+	sshHost string,
+	sshPort int,
+	sshUser string,
+	sshPass string,
+	protector SocketProtector,
+) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if isRunning {
 		return errors.New("tunnel sudah berjalan")
 	}
+
+	// Tutup fd kalau gagal sebelum engine ambil alih
+	fdOpen := true
+	defer func() {
+		if fdOpen {
+			_ = syscall.Close(tunFd)
+		}
+	}()
 
 	pubKey, err := hex.DecodeString(strings.TrimSpace(pubKeyHex))
 	if err != nil || len(pubKey) != 32 {
@@ -80,6 +103,25 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 	if domain == "" {
 		return errors.New("domain tunnel kosong")
 	}
+
+	dohURL = strings.TrimSpace(dohURL)
+	if dohURL == "" {
+		return errors.New("DoH URL kosong")
+	}
+
+	sshUser = strings.TrimSpace(sshUser)
+	if sshUser == "" {
+		return errors.New("SSH username kosong")
+	}
+
+	sshHost = strings.TrimSpace(sshHost)
+	if sshHost == "" {
+		sshHost = "127.0.0.1"
+	}
+	if sshPort <= 0 || sshPort > 65535 {
+		sshPort = 22
+	}
+	sshAddr := net.JoinHostPort(sshHost, strconv.Itoa(sshPort))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -95,7 +137,7 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 		},
 	}
 
-	pConn, err := newDnsttPacketConn(ctx, httpClient, strings.TrimSpace(dohURL), domain)
+	pConn, err := newDnsttPacketConn(ctx, httpClient, dohURL, domain)
 	if err != nil {
 		cancel()
 		return err
@@ -134,17 +176,53 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 		return fmt.Errorf("gagal init smux: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", localSocksListen)
+	// SSH handshake lewat 1 smux stream
+	sshStream, err := session.OpenStream()
 	if err != nil {
 		session.Close()
 		cancel()
-		return fmt.Errorf("gagal bind local SOCKS5: %w", err)
+		return fmt.Errorf("gagal buka stream SSH: %w", err)
+	}
+
+	sshCfg := &ssh.ClientConfig{
+		User: sshUser,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(sshPass),
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range answers {
+					answers[i] = sshPass
+				}
+				return answers, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         20 * time.Second,
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(sshStream, sshAddr, sshCfg)
+	if err != nil {
+		sshStream.Close()
+		session.Close()
+		cancel()
+		return fmt.Errorf("handshake SSH gagal (user/pass/port?): %w", err)
+	}
+	sshClient := ssh.NewClient(sshConn, chans, reqs)
+
+	ln, err := net.Listen("tcp", localSocksListen)
+	if err != nil {
+		sshClient.Close()
+		session.Close()
+		cancel()
+		return fmt.Errorf("gagal bind SOCKS5 lokal: %w", err)
 	}
 
 	cancelFunc = cancel
 	localLn = ln
+	activeSSH = sshClient
+	activeSMUX = session
 
-	go serveLocalSocks5(ctx, ln, session)
+	go serveLocalSocks5(ctx, ln, sshClient)
 
 	key := &engine.Key{
 		Mark:   0,
@@ -152,6 +230,9 @@ func StartTunnel(tunFd int, dohURL string, pubKeyHex string, domain string, prot
 		Device: "fd://" + strconv.Itoa(tunFd),
 		Proxy:  "socks5://" + localSocksListen,
 	}
+
+	// engine sekarang ambil alih fd
+	fdOpen = false
 	engine.Insert(key)
 	engine.Start()
 
@@ -168,6 +249,14 @@ func StopTunnel() {
 	}
 
 	engine.Stop()
+	if activeSSH != nil {
+		_ = activeSSH.Close()
+		activeSSH = nil
+	}
+	if activeSMUX != nil {
+		_ = activeSMUX.Close()
+		activeSMUX = nil
+	}
 	if localLn != nil {
 		_ = localLn.Close()
 		localLn = nil
@@ -179,28 +268,25 @@ func StopTunnel() {
 	isRunning = false
 }
 
-// --- Local SOCKS5 Bridge (TCP Stream + UDP DNS-over-TCP Forwarder) ---
+// --- SOCKS5 lokal (forward via SSH) ---
 
-func serveLocalSocks5(ctx context.Context, ln net.Listener, session *smux.Session) {
-	defer session.Close()
+func serveLocalSocks5(ctx context.Context, ln net.Listener, sshClient *ssh.Client) {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go handleSocks5Client(conn, session)
+		go handleSocks5Client(conn, sshClient)
 	}
 }
 
-func handleSocks5Client(client net.Conn, session *smux.Session) {
+func handleSocks5Client(client net.Conn, sshClient *ssh.Client) {
 	defer client.Close()
 
-	// 1. Greeting
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(client, hdr); err != nil || hdr[0] != 0x05 {
 		return
@@ -213,7 +299,6 @@ func handleSocks5Client(client net.Conn, session *smux.Session) {
 		return
 	}
 
-	// 2. Request
 	reqHdr := make([]byte, 4)
 	if _, err := io.ReadFull(client, reqHdr); err != nil || reqHdr[0] != 0x05 {
 		return
@@ -229,38 +314,25 @@ func handleSocks5Client(client net.Conn, session *smux.Session) {
 	}
 
 	switch cmd {
-	case 0x01: // CONNECT (TCP)
-		stream, err := session.OpenStream()
+	case 0x01: // CONNECT via SSH
+		target := socksTargetAddr(atyp, addrBytes, portBytes)
+		remote, err := sshClient.Dial("tcp", target)
 		if err != nil {
-			_, _ = client.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			_, _ = client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			return
 		}
-		defer stream.Close()
-
-		// Forward SOCKS5 handshake ke SOCKS5 server di VPS
-		if _, err := stream.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-			return
-		}
-		srvGreet := make([]byte, 2)
-		if _, err := io.ReadFull(stream, srvGreet); err != nil || srvGreet[1] != 0x00 {
-			return
-		}
-
-		fullReq := make([]byte, 0, 4+len(addrBytes)+2)
-		fullReq = append(fullReq, reqHdr...)
-		fullReq = append(fullReq, addrBytes...)
-		fullReq = append(fullReq, portBytes...)
-		if _, err := stream.Write(fullReq); err != nil {
+		defer remote.Close()
+		if _, err := client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 			return
 		}
 
 		go func() {
-			_, _ = io.Copy(stream, client)
-			_ = stream.Close()
+			_, _ = io.Copy(remote, client)
+			_ = remote.Close()
 		}()
-		_, _ = io.Copy(client, stream)
+		_, _ = io.Copy(client, remote)
 
-	case 0x03: // UDP ASSOCIATE (konversi DNS port 53 ke TCP via tunnel)
+	case 0x03: // UDP ASSOCIATE (khusus DNS port 53)
 		udpLn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 		if err != nil {
 			return
@@ -273,9 +345,8 @@ func handleSocks5Client(client net.Conn, session *smux.Session) {
 			return
 		}
 
-		go relayUdpDnsOverTcp(udpLn, session)
+		go relayUdpDnsViaSsh(udpLn, sshClient)
 
-		// Tahan koneksi kontrol TCP sampai ditutup oleh tun2socks
 		buf := make([]byte, 16)
 		for {
 			if _, err := client.Read(buf); err != nil {
@@ -288,13 +359,27 @@ func handleSocks5Client(client net.Conn, session *smux.Session) {
 	}
 }
 
+func socksTargetAddr(atyp byte, addrBytes, portBytes []byte) string {
+	port := binary.BigEndian.Uint16(portBytes)
+	var host string
+	switch atyp {
+	case 0x01:
+		host = net.IP(addrBytes).String()
+	case 0x03:
+		host = string(addrBytes[1:])
+	case 0x04:
+		host = net.IP(addrBytes).String()
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port)))
+}
+
 func readSocksAddr(r io.Reader, atyp byte) ([]byte, error) {
 	switch atyp {
-	case 0x01: // IPv4
+	case 0x01:
 		b := make([]byte, 4)
 		_, err := io.ReadFull(r, b)
 		return b, err
-	case 0x03: // Domain
+	case 0x03:
 		lb := make([]byte, 1)
 		if _, err := io.ReadFull(r, lb); err != nil {
 			return nil, err
@@ -303,7 +388,7 @@ func readSocksAddr(r io.Reader, atyp byte) ([]byte, error) {
 		b[0] = lb[0]
 		_, err := io.ReadFull(r, b[1:])
 		return b, err
-	case 0x04: // IPv6
+	case 0x04:
 		b := make([]byte, 16)
 		_, err := io.ReadFull(r, b)
 		return b, err
@@ -312,7 +397,7 @@ func readSocksAddr(r io.Reader, atyp byte) ([]byte, error) {
 	}
 }
 
-func relayUdpDnsOverTcp(udpLn *net.UDPConn, session *smux.Session) {
+func relayUdpDnsViaSsh(udpLn *net.UDPConn, sshClient *ssh.Client) {
 	buf := make([]byte, 4096)
 	for {
 		n, srcAddr, err := udpLn.ReadFromUDP(buf)
@@ -322,7 +407,6 @@ func relayUdpDnsOverTcp(udpLn *net.UDPConn, session *smux.Session) {
 		if n < 10 || buf[2] != 0x00 {
 			continue
 		}
-
 		atyp := buf[3]
 		var headerLen int
 		switch atyp {
@@ -341,7 +425,6 @@ func relayUdpDnsOverTcp(udpLn *net.UDPConn, session *smux.Session) {
 		if n <= headerLen {
 			continue
 		}
-
 		dstPort := binary.BigEndian.Uint16(buf[headerLen-2 : headerLen])
 		if dstPort != 53 {
 			continue
@@ -351,7 +434,7 @@ func relayUdpDnsOverTcp(udpLn *net.UDPConn, session *smux.Session) {
 		dnsQuery := append([]byte(nil), buf[headerLen:n]...)
 
 		go func() {
-			dnsResp, err := queryDnsOverTcpTunnel(session, socksUdpHeader[3:], dnsQuery)
+			dnsResp, err := queryDnsOverTcpViaSsh(sshClient, dnsQuery)
 			if err != nil {
 				return
 			}
@@ -363,51 +446,23 @@ func relayUdpDnsOverTcp(udpLn *net.UDPConn, session *smux.Session) {
 	}
 }
 
-func queryDnsOverTcpTunnel(session *smux.Session, atypAddrPort []byte, query []byte) ([]byte, error) {
-	stream, err := session.OpenStream()
+func queryDnsOverTcpViaSsh(sshClient *ssh.Client, query []byte) ([]byte, error) {
+	conn, err := sshClient.Dial("tcp", dnsViaSSHAddr)
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
-	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	if _, err := stream.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		return nil, err
-	}
-	greet := make([]byte, 2)
-	if _, err := io.ReadFull(stream, greet); err != nil || greet[1] != 0x00 {
-		return nil, errors.New("socks5 greet gagal")
-	}
-
-	req := make([]byte, 0, 3+len(atypAddrPort))
-	req = append(req, 0x05, 0x01, 0x00)
-	req = append(req, atypAddrPort...)
-	if _, err := stream.Write(req); err != nil {
-		return nil, err
-	}
-
-	repHdr := make([]byte, 4)
-	if _, err := io.ReadFull(stream, repHdr); err != nil || repHdr[1] != 0x00 {
-		return nil, errors.New("socks5 connect dns gagal")
-	}
-	if _, err := readSocksAddr(stream, repHdr[3]); err != nil {
-		return nil, err
-	}
-	var dummyPort [2]byte
-	if _, err := io.ReadFull(stream, dummyPort[:]); err != nil {
-		return nil, err
-	}
-
-	// RFC 1035 DNS-over-TCP framing (2-byte big-endian length prefix)
 	tcpQuery := make([]byte, 2+len(query))
 	binary.BigEndian.PutUint16(tcpQuery[:2], uint16(len(query)))
 	copy(tcpQuery[2:], query)
-	if _, err := stream.Write(tcpQuery); err != nil {
+	if _, err := conn.Write(tcpQuery); err != nil {
 		return nil, err
 	}
 
 	var respLenBuf [2]byte
-	if _, err := io.ReadFull(stream, respLenBuf[:]); err != nil {
+	if _, err := io.ReadFull(conn, respLenBuf[:]); err != nil {
 		return nil, err
 	}
 	respLen := int(binary.BigEndian.Uint16(respLenBuf[:]))
@@ -415,13 +470,13 @@ func queryDnsOverTcpTunnel(session *smux.Session, atypAddrPort []byte, query []b
 		return nil, errors.New("panjang respon DNS tidak valid")
 	}
 	resp := make([]byte, respLen)
-	if _, err := io.ReadFull(stream, resp); err != nil {
+	if _, err := io.ReadFull(conn, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// --- Noise NK Layer (Prologue "dnstt 2020-04-13") ---
+// --- Noise NK Layer ---
 
 type noiseStreamConn struct {
 	net.Conn
@@ -466,17 +521,12 @@ func performNoiseHandshake(conn net.Conn, serverPubKey []byte) (net.Conn, error)
 		return nil, err
 	}
 
-	return &noiseStreamConn{
-		Conn:   conn,
-		sendCS: sendCS,
-		recvCS: recvCS,
-	}, nil
+	return &noiseStreamConn{Conn: conn, sendCS: sendCS, recvCS: recvCS}, nil
 }
 
 func (c *noiseStreamConn) Write(p []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-
 	total := 0
 	for len(p) > 0 {
 		chunk := p
@@ -499,7 +549,6 @@ func (c *noiseStreamConn) Write(p []byte) (int, error) {
 func (c *noiseStreamConn) Read(p []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-
 	for len(c.readBuf) == 0 {
 		enc, err := readUint16Frame(c.Conn)
 		if err != nil {
@@ -511,7 +560,6 @@ func (c *noiseStreamConn) Read(p []byte) (int, error) {
 		}
 		c.readBuf = dec
 	}
-
 	n := copy(p, c.readBuf)
 	c.readBuf = c.readBuf[n:]
 	return n, nil
@@ -540,7 +588,7 @@ func readUint16Frame(r io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
-// --- DNSTT DoH PacketConn Layer ---
+// --- DNSTT DoH PacketConn ---
 
 type dummyAddr string
 
@@ -563,7 +611,6 @@ type dnsttPacketConn struct {
 }
 
 func newDnsttPacketConn(ctx context.Context, client *http.Client, dohURL, domain string) (*dnsttPacketConn, error) {
-	// Hitung kapasitas maksimum byte mentah dalam QNAME (max 253 karakter DNS)
 	availChars := 253 - len(domain) - 1
 	numLabels := (availChars + 63) / 64
 	usableBase32Chars := availChars - numLabels
@@ -583,23 +630,16 @@ func newDnsttPacketConn(ctx context.Context, client *http.Client, dohURL, domain
 	}
 
 	c := &dnsttPacketConn{
-		ctx:        ctx,
-		client:     client,
-		dohURL:     dohURL,
-		domain:     domain,
-		clientID:   cid,
-		maxRawUp:   maxRaw,
-		mtu:        mtu,
+		ctx: ctx, client: client, dohURL: dohURL, domain: domain,
+		clientID: cid, maxRawUp: maxRaw, mtu: mtu,
 		remoteAddr: dummyAddr(domain),
 		sendCh:     make(chan []byte, 256),
 		recvCh:     make(chan []byte, 256),
 		closed:     make(chan struct{}),
 	}
-
 	for i := 0; i < 4; i++ {
 		go c.pollWorker()
 	}
-
 	return c, nil
 }
 
@@ -634,8 +674,6 @@ func (c *dnsttPacketConn) pollWorker() {
 		if firstPkt != nil {
 			raw.WriteByte(byte(len(firstPkt)))
 			raw.Write(firstPkt)
-
-			// Gabungkan paket tambahan jika masih muat dalam 1 QNAME
 			for raw.Len()+1 < c.maxRawUp {
 				select {
 				case nextPkt := <-c.sendCh:
@@ -643,7 +681,6 @@ func (c *dnsttPacketConn) pollWorker() {
 						raw.WriteByte(byte(len(nextPkt)))
 						raw.Write(nextPkt)
 					} else {
-						// Kembalikan ke antrean jika melebihi batas
 						select {
 						case c.sendCh <- nextPkt:
 						default:
@@ -655,7 +692,6 @@ func (c *dnsttPacketConn) pollWorker() {
 				}
 			}
 		} else {
-			// Poll packet: marker 0x00 + 8 byte random agar DoH tidak meng-cache query
 			raw.WriteByte(0x00)
 			var pad [8]byte
 			_, _ = rand.Read(pad[:])
@@ -696,13 +732,11 @@ func (c *dnsttPacketConn) exchangeDoH(rawPayload []byte) bool {
 			ID:               binary.BigEndian.Uint16(idBuf[:]),
 			RecursionDesired: true,
 		},
-		Questions: []dnsmessage.Question{
-			{
-				Name:  name,
-				Type:  dnsmessage.TypeTXT,
-				Class: dnsmessage.ClassINET,
-			},
-		},
+		Questions: []dnsmessage.Question{{
+			Name:  name,
+			Type:  dnsmessage.TypeTXT,
+			Class: dnsmessage.ClassINET,
+		}},
 	}
 
 	wireQuery, err := msg.Pack()
@@ -722,7 +756,6 @@ func (c *dnsttPacketConn) exchangeDoH(rawPayload []byte) bool {
 		return false
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
@@ -757,7 +790,6 @@ func (c *dnsttPacketConn) exchangeDoH(rawPayload []byte) bool {
 		}
 		pkt := append([]byte(nil), downstream[:pktLen]...)
 		downstream = downstream[pktLen:]
-
 		select {
 		case c.recvCh <- pkt:
 			receivedAny = true
@@ -765,7 +797,6 @@ func (c *dnsttPacketConn) exchangeDoH(rawPayload []byte) bool {
 			return receivedAny
 		}
 	}
-
 	return receivedAny
 }
 
@@ -793,9 +824,7 @@ func (c *dnsttPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (c *dnsttPacketConn) Close() error {
-	c.closeOnce.Do(func() {
-		close(c.closed)
-	})
+	c.closeOnce.Do(func() { close(c.closed) })
 	return nil
 }
 
