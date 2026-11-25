@@ -99,7 +99,7 @@ class VpnTunnelService : VpnService(), SocketProtector {
     private fun startTunnel(dohUrl: String, pubKey: String, domain: String) {
         if (isRunning.get()) {
             try {
-                Mobile.stopTunnel()
+                Mobile.StopTunnel()
             } catch (_: Exception) {
             }
             isRunning.set(false)
@@ -121,7 +121,7 @@ class VpnTunnelService : VpnService(), SocketProtector {
             }
 
             val rawTunFd = pfd.detachFd()
-            Mobile.startTunnel(rawTunFd.toLong(), dohUrl, pubKey, domain, this)
+            Mobile.StartTunnel(rawTunFd.toLong(), dohUrl, pubKey, domain, this)
             isRunning.set(true)
             broadcastStatus("Connected")
         } catch (e: Exception) {
@@ -135,7 +135,7 @@ class VpnTunnelService : VpnService(), SocketProtector {
         executor.execute {
             if (isRunning.getAndSet(false)) {
                 try {
-                    Mobile.stopTunnel()
+                    Mobile.StopTunnel()
                 } catch (_: Exception) {
                 }
             }
@@ -155,7 +155,7 @@ class VpnTunnelService : VpnService(), SocketProtector {
         sendBroadcast(intent)
     }
 
-    override fun protectFd(fd: Long): Boolean {
+    override fun ProtectFd(fd: Long): Boolean {
         return protect(fd.toInt())
     }
 
@@ -167,7 +167,7 @@ class VpnTunnelService : VpnService(), SocketProtector {
     override fun onDestroy() {
         if (isRunning.getAndSet(false)) {
             try {
-                Mobile.stopTunnel()
+                Mobile.StopTunnel()
             } catch (_: Exception) {
             }
         }
