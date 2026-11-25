@@ -39,6 +39,7 @@ jobs:
           gomobile init
           cd go-core
           export GOPROXY=direct
+          export GIT_TERMINAL_PROMPT=1
           go mod tidy
           chmod +x build.sh
           ./build.sh
