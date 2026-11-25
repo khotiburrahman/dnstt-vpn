@@ -25,11 +25,13 @@ jobs:
 
       - name: Setup Android SDK & NDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125'
 
-      - name: Install Android NDK & Build-Tools
+      - name: Set NDK Environment
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "ANDROID_NDK_HOME=$SDK_DIR/ndk/26.1.10909125" >> $GITHUB_ENV
 
       - name: Install gomobile & Build AAR
         run: |
@@ -38,6 +40,7 @@ jobs:
           gomobile init
           cd go-core
           go mod tidy
+          go get golang.org/x/mobile/bind
           chmod +x build.sh
           ./build.sh
 
@@ -46,7 +49,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build Debug APK (Signed & Siap Install)
+      - name: Build Debug APK
         working-directory: android
         run: gradle assembleDebug
 
