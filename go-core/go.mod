@@ -10,5 +10,3 @@ require (
 	golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
 	golang.org/x/net v0.29.0
 )
-
-replace gvisor.dev/gvisor => gvisor.dev/gvisor v0.0.0-20240722211153-64c016c92987
